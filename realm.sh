@@ -9,7 +9,7 @@
 # 4. 面板服务控制兼容 systemd 与 OpenRC
 # 5. 构建产物改为 GitHub Actions 自动生成
 # 6. 修复终端异常断开时 read 读到 EOF 导致 CPU 100% 空转死循环的严重缺陷
-# 7. 优化 Realm 服务启动参数，默认启用 -p 32 扩充零拷贝管道容量
+# 7. 根据物理内存智能动态适配 Realm 零拷贝管道容量 (-p 16/32/64)，防止小内存 OOM
 # ==========================================
 
 # --- 基础配置 ---
@@ -318,7 +318,43 @@ set_service_file_permissions() {
     chmod "$mode" "$file_path"
 }
 
+get_total_mem_mb() {
+    local mem_kb
+    mem_kb=$(grep -i MemTotal /proc/meminfo 2>/dev/null | awk '{print $2}')
+    if [ -n "$mem_kb" ] && [ "$mem_kb" -gt 0 ] 2>/dev/null; then
+        echo $((mem_kb / 1024))
+    else
+        echo 1024
+    fi
+}
+
+get_recommended_pipe_page() {
+    local mem_mb
+    mem_mb=$(get_total_mem_mb)
+    if [ "$mem_mb" -lt 768 ]; then
+        # 小内存机 (<= 512M 或 < 768M): 保持默认 16 页 (64KB)，保守防 OOM
+        echo 16
+    elif [ "$mem_mb" -lt 3500 ]; then
+        # 中等内存 (1G ~ 3G): 使用 32 页 (128KB)，兼顾高吞吐与内存开销
+        echo 32
+    else
+        # 大内存机 (>= 4G): 使用 64 页 (256KB)，极致零拷贝吞吐
+        echo 64
+    fi
+}
+
 write_realm_service() {
+    local pipe_page
+    pipe_page=$(get_recommended_pipe_page)
+    local mem_mb
+    mem_mb=$(get_total_mem_mb)
+    echo -e "检测到系统内存: ${mem_mb}MB，自动适配管道容量: -p ${pipe_page} ($((pipe_page * 4))KB)"
+
+    local pipe_arg=""
+    if [ "$pipe_page" -ne 16 ]; then
+        pipe_arg=" -p ${pipe_page}"
+    fi
+
     case "$(detect_init_system)" in
         systemd)
             cat <<EOF > "$REALM_SYSTEMD_SERVICE_FILE"
@@ -333,7 +369,7 @@ User=root
 Restart=on-failure
 RestartSec=5s
 WorkingDirectory=${REALM_DIR}
-ExecStart=${REALM_BIN} -c ${CONFIG_FILE} -p 32
+ExecStart=${REALM_BIN} -c ${CONFIG_FILE}${pipe_arg}
 
 [Install]
 WantedBy=multi-user.target
@@ -347,7 +383,7 @@ name="Realm Forwarding Service"
 description="Realm Forwarding Service"
 supervisor="supervise-daemon"
 command="${REALM_BIN}"
-command_args="-c ${CONFIG_FILE}"
+command_args="-c ${CONFIG_FILE}${pipe_arg}"
 directory="${REALM_DIR}"
 command_user="root"
 respawn_delay=5
