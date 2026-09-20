@@ -1,17 +1,19 @@
 #!/bin/bash
 
 # ==========================================
-# Realm 一键转发脚本 v3.2.6
+# Realm 一键转发脚本 v3.2.7 (violetaini fork)
 # 更新日志:
 # 1. 修复 Alpine Linux (musl) 下 IP/域名正则校验失败的问题
 # 2. 新增 Alpine Linux / OpenRC 支持
 # 3. Alpine 自动选择 musl 版 Realm 二进制
 # 4. 面板服务控制兼容 systemd 与 OpenRC
 # 5. 构建产物改为 GitHub Actions 自动生成
+# 6. 修复终端异常断开时 read 读到 EOF 导致 CPU 100% 空转死循环的严重缺陷
+# 7. 优化 Realm 服务启动参数，默认启用 -p 32 扩充零拷贝管道容量
 # ==========================================
 
 # --- 基础配置 ---
-sh_ver="3.2.6"
+sh_ver="3.2.7"
 panel_ver="v3.2.6"
 
 # 颜色定义
@@ -331,7 +333,7 @@ User=root
 Restart=on-failure
 RestartSec=5s
 WorkingDirectory=${REALM_DIR}
-ExecStart=${REALM_BIN} -c ${CONFIG_FILE}
+ExecStart=${REALM_BIN} -c ${CONFIG_FILE} -p 32
 
 [Install]
 WantedBy=multi-user.target
@@ -435,14 +437,14 @@ install_realm() {
 }
 
 uninstall_realm() {
-    read -p "确定卸载 Realm? [y/N]: " confirm
+    read -p "确定卸载 Realm? [y/N]: " confirm || return
     [[ "$confirm" != "y" && "$confirm" != "Y" ]] && return
     service_stop realm
     service_disable realm
     rm -f "$REALM_SYSTEMD_SERVICE_FILE" "$REALM_OPENRC_SERVICE_FILE"
     service_daemon_reload
     rm -rf "$REALM_DIR"
-    read -p "删除配置? [y/N]: " del_conf
+    read -p "删除配置? [y/N]: " del_conf || return
     [[ "$del_conf" == "y" || "$del_conf" == "Y" ]] && rm -rf "$CONFIG_DIR"
     echo -e "${GREEN}已卸载${PLAIN}"
 }
@@ -455,7 +457,7 @@ add_forward() {
     # 1. 本机端口
     local attempt=0
     while true; do
-        read -e -p "本机端口: " lp
+        read -e -p "本机端口: " lp || return
         # 依次校验：格式、占用、重复
         if ! validate_port "$lp"; then
             ((attempt++)); [ $attempt -ge 2 ] && { echo -e "${RED}错误过多，返回主菜单${PLAIN}"; return; }
@@ -475,7 +477,7 @@ add_forward() {
     # 2. 落地IP
     attempt=0
     while true; do
-        read -e -p "落地IP/域名: " rip
+        read -e -p "落地IP/域名: " rip || return
         if ! validate_ip "$rip"; then
              ((attempt++)); [ $attempt -ge 2 ] && { echo -e "${RED}错误过多，返回主菜单${PLAIN}"; return; }
              continue
@@ -486,7 +488,7 @@ add_forward() {
     # 3. 落地端口
     attempt=0
     while true; do
-        read -e -p "落地端口: " rp
+        read -e -p "落地端口: " rp || return
         if ! validate_port "$rp"; then
             ((attempt++)); [ $attempt -ge 2 ] && { echo -e "${RED}错误过多，返回主菜单${PLAIN}"; return; }
             continue
@@ -507,10 +509,10 @@ add_range_forward() {
     echo -e "${YELLOW}>>> 端口段转发 (连续错误2次自动返回)${PLAIN}"
     local attempt=0
     
-    while true; do read -e -p "落地IP: " rip; validate_ip "$rip" && break; ((attempt++)); [ $attempt -ge 2 ] && return; done
-    attempt=0; while true; do read -e -p "起始端口: " sp; validate_port "$sp" && break; ((attempt++)); [ $attempt -ge 2 ] && return; done
-    attempt=0; while true; do read -e -p "结束端口: " ep; validate_port "$ep" && break; ((attempt++)); [ $attempt -ge 2 ] && return; done
-    attempt=0; while true; do read -e -p "落地基准端口: " rbp; validate_port "$rbp" && break; ((attempt++)); [ $attempt -ge 2 ] && return; done
+    while true; do read -e -p "落地IP: " rip || return; validate_ip "$rip" && break; ((attempt++)); [ $attempt -ge 2 ] && return; done
+    attempt=0; while true; do read -e -p "起始端口: " sp || return; validate_port "$sp" && break; ((attempt++)); [ $attempt -ge 2 ] && return; done
+    attempt=0; while true; do read -e -p "结束端口: " ep || return; validate_port "$ep" && break; ((attempt++)); [ $attempt -ge 2 ] && return; done
+    attempt=0; while true; do read -e -p "落地基准端口: " rbp || return; validate_port "$rbp" && break; ((attempt++)); [ $attempt -ge 2 ] && return; done
 
     [ "$sp" -ge "$ep" ] && { echo -e "${RED}起始必须小于结束${PLAIN}"; return; }
 
@@ -541,7 +543,7 @@ delete_forward() {
         echo -e "${GREEN}$((i+1)).${PLAIN} ${listens[i]} -> ${remotes[i]}"
     done
     echo "==============="
-    read -p "删除序号(0取消): " c
+    read -p "删除序号(0取消): " c || return
     [[ "$c" == "0" || -z "$c" ]] && return
     if ! [[ "$c" =~ ^[0-9]+$ ]] || [ "$c" -lt 1 ] || [ "$c" -gt "${#listens[@]}" ]; then
         echo -e "${RED}无效序号${PLAIN}"; return
@@ -590,7 +592,7 @@ panel_management() {
         echo "3. 停止面板"
         echo "4. 卸载面板"
         echo "0. 返回上级"
-        read -p "选择: " pc
+        read -p "选择: " pc || break
         case $pc in
             1) install_panel ;;
             2) service_start realm-panel && echo "尝试启动..." || echo -e "${RED}启动失败${PLAIN}" ;;
@@ -599,7 +601,7 @@ panel_management() {
             0) break ;;
             *) echo "无效选择" ;;
         esac
-        read -p "按回车继续..."
+        read -p "按回车继续..." || break
     done
 }
 
@@ -679,11 +681,11 @@ uninstall_panel() {
 
 # --- 脚本更新 ---
 Update_Shell() {
-    local url="https://raw.githubusercontent.com/wcwq98/realm/main/realm.sh"
+    local url="https://raw.githubusercontent.com/violetaini/realm/main/realm.sh"
     local new_ver=$(wget -qO- "$url" | grep 'sh_ver="' | awk -F "=" '{print $NF}' | tr -d '"' | head -1)
     [[ -z "$new_ver" ]] && { echo -e "${RED}检测失败${PLAIN}"; return; }
     [[ "$new_ver" == "$sh_ver" ]] && { echo "已是最新"; return; }
-    read -p "更新到 $new_ver? [y/N]: " yn
+    read -p "更新到 $new_ver? [y/N]: " yn || return
     [[ "$yn" =~ ^[Yy]$ ]] && wget -N "$url" -O realm.sh && chmod +x realm.sh && echo "已更新" && exit 0
 }
 
@@ -718,7 +720,7 @@ main() {
     check_dependencies; init_env
     while true; do
         show_menu
-        read -p "选择 [0-11]: " opt
+        read -p "选择 [0-11]: " opt || exit 0
         case $opt in
             1) install_realm ;;
             2) uninstall_realm ;;
@@ -734,7 +736,7 @@ main() {
             0) exit 0 ;;
             *) echo "无效" ;;
         esac
-        [ "$opt" != "0" ] && read -p "按回车返回..."
+        [ "$opt" != "0" ] && read -p "按回车返回..." || exit 0
     done
 }
 

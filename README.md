@@ -4,20 +4,17 @@
 
 本脚本在原教程基础上增加了 Realm 安装、转发规则管理、服务重启、脚本更新和可视化面板管理功能。
 
-## v3.2.5 更新重点
+## v3.2.7 更新重点 (violetaini fork)
 
-- 支持 Alpine Linux。
-- Alpine 自动使用 OpenRC 管理 `realm` 和 `realm-panel` 服务。
-- Alpine 自动选择官方 `unknown-linux-musl` 版 Realm 二进制。
-- Debian / Ubuntu / CentOS 等 systemd 系统保留原有行为。
-- 面板后端兼容 systemd 与 OpenRC 服务控制。
-- Release 构建产物改为 GitHub Actions 自动生成，不再提交本地二进制。
+- **严重缺陷修复**：彻底修复在 SSH 终端异常断开、关闭窗口或休眠时，`read` 读到 EOF 导致脚本陷入 `while true` 疯狂空转、长久占用 CPU 的 Bug。
+- **性能优化**：`systemd` 启动命令默认追加 `-p 32` 参数，扩充零拷贝管道至 128KB，大幅减少单核系统调用开销。
+- 自动更新源切换至本维护仓库。
 
 ## 脚本界面预览
 
 ```text
 ################################################
-#        Realm 一键转发脚本 (v3.2.6)         #
+#        Realm 一键转发脚本 (v3.2.7)         #
 ################################################
  Realm 状态: 运行中
  面板 状态: 已安装但未启动
@@ -42,16 +39,10 @@
 
 ## 一键安装
 
-### Debian / Ubuntu / CentOS
+### 主分支稳定版 (推荐)
 
 ```bash
-curl -L https://github.com/wcwq98/realm/releases/download/v3.2.6/realm.sh -o realm.sh && chmod +x realm.sh && ./realm.sh
-```
-
-或使用主分支最新版：
-
-```bash
-curl -L https://raw.githubusercontent.com/wcwq98/realm/refs/heads/main/realm.sh -o realm.sh && chmod +x realm.sh && ./realm.sh
+curl -L https://raw.githubusercontent.com/violetaini/realm/main/realm.sh -o realm.sh && chmod +x realm.sh && ./realm.sh
 ```
 
 ### Alpine Linux
