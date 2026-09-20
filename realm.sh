@@ -211,7 +211,7 @@ init_env() {
         rm -f /etc/systemd/system/realm-panel.service /etc/init.d/realm-panel 2>/dev/null || true
         service_daemon_reload 2>/dev/null || true
     fi
-    [ -d "${REALM_DIR}/web" ] && rm -rf "${REALM_DIR}/web" 2>/dev/null || true
+    rm -rf "${REALM_DIR}/web" 2>/dev/null || true
 }
 
 write_config_header() {
@@ -252,7 +252,6 @@ check_dependencies() {
             require_command_package sed sed
             require_command_package grep grep
             require_command_package curl curl
-            require_command_package unzip unzip
             require_command_package ss iproute2
             if [ "$manager" = "systemd" ]; then
                 require_command_package systemctl systemd
@@ -267,7 +266,6 @@ check_dependencies() {
             require_command_package sed sed
             require_command_package grep grep
             require_command_package curl curl
-            require_command_package unzip unzip
             require_command_package ss iproute
             if [ "$manager" = "systemd" ]; then
                 require_command_package systemctl systemd
@@ -283,14 +281,13 @@ check_dependencies() {
             require_command_package sed sed
             require_command_package grep grep
             require_command_package curl curl
-            require_command_package unzip unzip
             require_command_package ss iproute2
             require_command_package update-ca-certificates ca-certificates
             require_command_package rc-service openrc
             require_command_package rc-update openrc
             ;;
         *)
-            echo -e "${RED}请手动安装依赖: wget tar sed grep curl unzip ss。${PLAIN}"
+            echo -e "${RED}请手动安装依赖: wget tar sed grep curl ss。${PLAIN}"
             exit 1
             ;;
     esac
@@ -402,10 +399,12 @@ EOF
 install_realm() {
     echo -e "${GREEN}> 部署 Realm...${PLAIN}"
     check_dependencies; init_env
-    local version=$(curl -s https://api.github.com/repos/zhboner/realm/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+    local version
+    version=$(curl -s https://api.github.com/repos/zhboner/realm/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
     [ -z "$version" ] && version="v2.6.0"
 
-    local arch=$(uname -m)
+    local arch
+    arch=$(uname -m)
     local filename
     if ! filename=$(select_realm_filename "$arch"); then
         echo -e "${RED}不支持架构: $arch${PLAIN}"
@@ -424,14 +423,14 @@ install_realm() {
 }
 
 uninstall_realm() {
-    read -p "确定卸载 Realm? [y/N]: " confirm || return
+    read -r -p "确定卸载 Realm? [y/N]: " confirm || return
     [[ "$confirm" != "y" && "$confirm" != "Y" ]] && return
     service_stop realm
     service_disable realm
     rm -f "$REALM_SYSTEMD_SERVICE_FILE" "$REALM_OPENRC_SERVICE_FILE"
     service_daemon_reload
     rm -rf "$REALM_DIR"
-    read -p "删除配置? [y/N]: " del_conf || return
+    read -r -p "删除配置? [y/N]: " del_conf || return
     [[ "$del_conf" == "y" || "$del_conf" == "Y" ]] && rm -rf "$CONFIG_DIR"
     echo -e "${GREEN}已卸载${PLAIN}"
 }
@@ -444,7 +443,7 @@ add_forward() {
     # 1. 本机端口
     local attempt=0
     while true; do
-        read -e -p "本机端口: " lp || return
+        read -r -e -p "本机端口: " lp || return
         # 依次校验：格式、占用、重复
         if ! validate_port "$lp"; then
             ((attempt++)); [ $attempt -ge 2 ] && { echo -e "${RED}错误过多，返回主菜单${PLAIN}"; return; }
@@ -464,7 +463,7 @@ add_forward() {
     # 2. 落地IP
     attempt=0
     while true; do
-        read -e -p "落地IP/域名: " rip || return
+        read -r -e -p "落地IP/域名: " rip || return
         if ! validate_ip "$rip"; then
              ((attempt++)); [ $attempt -ge 2 ] && { echo -e "${RED}错误过多，返回主菜单${PLAIN}"; return; }
              continue
@@ -475,7 +474,7 @@ add_forward() {
     # 3. 落地端口
     attempt=0
     while true; do
-        read -e -p "落地端口: " rp || return
+        read -r -e -p "落地端口: " rp || return
         if ! validate_port "$rp"; then
             ((attempt++)); [ $attempt -ge 2 ] && { echo -e "${RED}错误过多，返回主菜单${PLAIN}"; return; }
             continue
@@ -496,16 +495,16 @@ add_range_forward() {
     echo -e "${YELLOW}>>> 端口段转发 (连续错误2次自动返回)${PLAIN}"
     local attempt=0
     
-    while true; do read -e -p "落地IP: " rip || return; validate_ip "$rip" && break; ((attempt++)); [ $attempt -ge 2 ] && return; done
-    attempt=0; while true; do read -e -p "起始端口: " sp || return; validate_port "$sp" && break; ((attempt++)); [ $attempt -ge 2 ] && return; done
-    attempt=0; while true; do read -e -p "结束端口: " ep || return; validate_port "$ep" && break; ((attempt++)); [ $attempt -ge 2 ] && return; done
-    attempt=0; while true; do read -e -p "落地基准端口: " rbp || return; validate_port "$rbp" && break; ((attempt++)); [ $attempt -ge 2 ] && return; done
+    while true; do read -r -e -p "落地IP: " rip || return; validate_ip "$rip" && break; ((attempt++)); [ $attempt -ge 2 ] && return; done
+    attempt=0; while true; do read -r -e -p "起始端口: " sp || return; validate_port "$sp" && break; ((attempt++)); [ $attempt -ge 2 ] && return; done
+    attempt=0; while true; do read -r -e -p "结束端口: " ep || return; validate_port "$ep" && break; ((attempt++)); [ $attempt -ge 2 ] && return; done
+    attempt=0; while true; do read -r -e -p "落地基准端口: " rbp || return; validate_port "$rbp" && break; ((attempt++)); [ $attempt -ge 2 ] && return; done
 
     [ "$sp" -ge "$ep" ] && { echo -e "${RED}起始必须小于结束${PLAIN}"; return; }
 
     echo "生成中..."
     local rp=$rbp
-    for ((p=$sp; p<=$ep; p++)); do
+    for ((p=sp; p<=ep; p++)); do
         if ! grep -Fq "listen = \"[::]:$p\"" "$CONFIG_FILE"; then
             cat <<EOF >> "$CONFIG_FILE"
 
@@ -521,16 +520,27 @@ EOF
 
 delete_forward() {
     [ ! -f "$CONFIG_FILE" ] && return
-    local listens=($(grep "listen =" "$CONFIG_FILE" | awk -F'"' '{print $2}'))
-    local remotes=($(grep "remote =" "$CONFIG_FILE" | awk -F'"' '{print $2}'))
+    local listens=()
+    local remotes=()
+    while IFS= read -r line; do
+        [ -n "$line" ] && listens+=("$line")
+    done < <(grep -E '^\s*listen\s*=' "$CONFIG_FILE" | awk -F'"' '{print $2}')
+    while IFS= read -r line; do
+        [ -n "$line" ] && remotes+=("$line")
+    done < <(grep -E '^\s*remote\s*=' "$CONFIG_FILE" | awk -F'"' '{print $2}')
+
     [ ${#listens[@]} -eq 0 ] && { echo "无规则"; return; }
+    if [ ${#listens[@]} -ne ${#remotes[@]} ]; then
+        echo -e "${RED}配置文件格式异常: listen 与 remote 数量不匹配，请手动检查${PLAIN}"
+        return 1
+    fi
 
     echo "==============="
     for ((i=0; i<${#listens[@]}; i++)); do
         echo -e "${GREEN}$((i+1)).${PLAIN} ${listens[i]} -> ${remotes[i]}"
     done
     echo "==============="
-    read -p "删除序号(0取消): " c || return
+    read -r -p "删除序号(0取消): " c || return
     [[ "$c" == "0" || -z "$c" ]] && return
     if ! [[ "$c" =~ ^[0-9]+$ ]] || [ "$c" -lt 1 ] || [ "$c" -gt "${#listens[@]}" ]; then
         echo -e "${RED}无效序号${PLAIN}"; return
@@ -570,10 +580,11 @@ restart_service() {
 # --- 脚本更新 ---
 Update_Shell() {
     local url="https://raw.githubusercontent.com/violetaini/realm/main/realm.sh"
-    local new_ver=$(wget -qO- "$url" | grep 'sh_ver="' | awk -F "=" '{print $NF}' | tr -d '"' | head -1)
+    local new_ver
+    new_ver=$(wget -qO- "$url" | grep 'sh_ver="' | awk -F "=" '{print $NF}' | tr -d '"' | head -1)
     [[ -z "$new_ver" ]] && { echo -e "${RED}检测失败${PLAIN}"; return; }
     [[ "$new_ver" == "$sh_ver" ]] && { echo "已是最新"; return; }
-    read -p "更新到 $new_ver? [y/N]: " yn || return
+    read -r -p "更新到 $new_ver? [y/N]: " yn || return
     [[ "$yn" =~ ^[Yy]$ ]] && wget -N "$url" -O realm.sh && chmod +x realm.sh && echo "已更新" && exit 0
 }
 
@@ -606,7 +617,7 @@ main() {
     check_dependencies; init_env
     while true; do
         show_menu
-        read -p "选择 [0-10]: " opt || exit 0
+        read -r -p "选择 [0-10]: " opt || exit 0
         case $opt in
             1) install_realm ;;
             2) uninstall_realm ;;
@@ -621,7 +632,7 @@ main() {
             0) exit 0 ;;
             *) echo "无效" ;;
         esac
-        [ "$opt" != "0" ] && read -p "按回车返回..." || exit 0
+        [ "$opt" != "0" ] && read -r -p "按回车返回..." || exit 0
     done
 }
 
