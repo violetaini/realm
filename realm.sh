@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==========================================
-# Realm 一键转发脚本 v3.2.7 (violetaini fork)
+# Realm 一键转发脚本 v3.2.8 (violetaini fork)
 # 更新日志:
 # 1. 修复 Alpine Linux (musl) 下 IP/域名正则校验失败的问题
 # 2. 新增 Alpine Linux / OpenRC 支持
@@ -10,11 +10,11 @@
 # 5. 构建产物改为 GitHub Actions 自动生成
 # 6. 修复终端异常断开时 read 读到 EOF 导致 CPU 100% 空转死循环的严重缺陷
 # 7. 根据物理内存智能动态适配 Realm 零拷贝管道容量 (-p 16/32/64)，防止小内存 OOM
+# 8. 彻底移除 Web 可视化面板功能，消除 HTTP 端口暴露与扫描攻击面，保持纯净 CLI
 # ==========================================
 
 # --- 基础配置 ---
-sh_ver="3.2.7"
-panel_ver="v3.2.6"
+sh_ver="3.2.8"
 
 # 颜色定义
 RED="\033[31m"
@@ -29,10 +29,6 @@ CONFIG_DIR="/root/.realm"
 CONFIG_FILE="${CONFIG_DIR}/config.toml"
 REALM_SYSTEMD_SERVICE_FILE="/etc/systemd/system/realm.service"
 REALM_OPENRC_SERVICE_FILE="/etc/init.d/realm"
-PANEL_DIR="${REALM_DIR}/web"
-PANEL_BIN="${PANEL_DIR}/realm_web"
-PANEL_SYSTEMD_SERVICE_FILE="/etc/systemd/system/realm-panel.service"
-PANEL_OPENRC_SERVICE_FILE="/etc/init.d/realm-panel"
 
 command_exists() {
     command -v "$1" >/dev/null 2>&1
@@ -146,16 +142,6 @@ get_status() {
     fi
 }
 
-get_panel_status() {
-    if [ ! -f "$PANEL_BIN" ]; then
-        echo -e "${RED}未安装${PLAIN}"
-    elif service_is_active realm-panel; then
-        echo -e "${GREEN}运行中${PLAIN}"
-    else
-        echo -e "${YELLOW}已安装但未启动${PLAIN}"
-    fi
-}
-
 # --- 核心校验函数 ---
 
 validate_port() {
@@ -218,6 +204,14 @@ init_env() {
     mkdir -p "$REALM_DIR"
     mkdir -p "$CONFIG_DIR"
     [ ! -f "$CONFIG_FILE" ] && write_config_header
+    # 彻底禁用并清理历史遗留面板服务与文件，防范 HTTP 端口扫描风险
+    if service_is_active realm-panel 2>/dev/null; then
+        service_stop realm-panel 2>/dev/null || true
+        service_disable realm-panel 2>/dev/null || true
+        rm -f /etc/systemd/system/realm-panel.service /etc/init.d/realm-panel 2>/dev/null || true
+        service_daemon_reload 2>/dev/null || true
+    fi
+    [ -d "${REALM_DIR}/web" ] && rm -rf "${REALM_DIR}/web" 2>/dev/null || true
 }
 
 write_config_header() {
@@ -403,50 +397,7 @@ EOF
     esac
 }
 
-write_panel_service() {
-    case "$(detect_init_system)" in
-        systemd)
-            cat <<EOF > "$PANEL_SYSTEMD_SERVICE_FILE"
-[Unit]
-Description=Realm Web Panel
-After=network.target
 
-[Service]
-Type=simple
-User=root
-WorkingDirectory=${PANEL_DIR}
-ExecStart=${PANEL_BIN}
-Restart=on-failure
-
-[Install]
-WantedBy=multi-user.target
-EOF
-            set_service_file_permissions "$PANEL_SYSTEMD_SERVICE_FILE" 0644
-            ;;
-        openrc)
-            cat <<EOF > "$PANEL_OPENRC_SERVICE_FILE"
-#!/sbin/openrc-run
-name="Realm Web Panel"
-description="Realm Web Panel"
-supervisor="supervise-daemon"
-command="${PANEL_BIN}"
-directory="${PANEL_DIR}"
-command_user="root"
-respawn_delay=5
-respawn_max=0
-
-depend() {
-    need net
-}
-EOF
-            set_service_file_permissions "$PANEL_OPENRC_SERVICE_FILE" 0755
-            ;;
-        *)
-            echo -e "${RED}无法创建面板服务文件: 不支持的服务管理器。${PLAIN}"
-            return 1
-            ;;
-    esac
-}
 
 install_realm() {
     echo -e "${GREEN}> 部署 Realm...${PLAIN}"
@@ -616,105 +567,6 @@ restart_service() {
     service_is_active realm && echo -e "${GREEN}重启成功${PLAIN}" || echo -e "${RED}重启失败${PLAIN}"
 }
 
-# --- 面板管理 ---
-panel_management() {
-    while true; do
-        clear
-        echo "=== Realm 面板管理 ($panel_ver) ==="
-        echo -e "面板状态: $(get_panel_status)"
-        echo "============================="
-        echo "1. 安装面板"
-        echo "2. 启动面板"
-        echo "3. 停止面板"
-        echo "4. 卸载面板"
-        echo "0. 返回上级"
-        read -p "选择: " pc || break
-        case $pc in
-            1) install_panel ;;
-            2) service_start realm-panel && echo "尝试启动..." || echo -e "${RED}启动失败${PLAIN}" ;;
-            3) service_stop realm-panel && echo "已停止" || echo -e "${RED}停止失败${PLAIN}" ;;
-            4) uninstall_panel ;;
-            0) break ;;
-            *) echo "无效选择" ;;
-        esac
-        read -p "按回车继续..." || break
-    done
-}
-
-install_panel() {
-    check_dependencies
-    local arch=$(uname -m)
-    local p_file=""
-    case "$arch" in
-        x86_64) p_file="realm-panel-linux-amd64.zip" ;;
-        aarch64|arm64) p_file="realm-panel-linux-arm64.zip" ;;
-        *) echo "不支持架构: $arch"; return ;;
-    esac
-
-    mkdir -p "$PANEL_DIR"
-    local url="https://github.com/wcwq98/realm/releases/download/${panel_ver}/${p_file}"
-    local tmp_zip="/tmp/${p_file}"
-    local tmp_dir="/tmp/realm_panel_$$"
-
-    if ! wget -O "$tmp_zip" "$url"; then
-        echo -e "${RED}下载失败${PLAIN}"
-        rm -f "$tmp_zip"
-        return 1
-    fi
-
-    mkdir -p "$tmp_dir"
-    unzip -o "$tmp_zip" -d "$tmp_dir"
-    rm -f "$tmp_zip"
-
-    # 无论 zip 内部目录结构如何，都能找到 realm_web 二进制
-    local found_bin
-    found_bin=$(find "$tmp_dir" -name "realm_web" -type f 2>/dev/null | head -1)
-    if [ -z "$found_bin" ]; then
-        # 兜底：找第一个非文本可执行文件
-        found_bin=$(find "$tmp_dir" -maxdepth 3 -type f ! -name "*.txt" ! -name "*.md" 2>/dev/null | head -1)
-    fi
-
-    if [ -z "$found_bin" ]; then
-        echo -e "${RED}解压后未找到可执行文件，请手动安装${PLAIN}"
-        rm -rf "$tmp_dir"
-        return 1
-    fi
-
-    cp "$found_bin" "$PANEL_BIN"
-    chmod +x "$PANEL_BIN"
-
-    # 复制静态资源和模板
-    [ -d "$tmp_dir/static" ]    && cp -r "$tmp_dir/static"    "$PANEL_DIR/"
-    [ -d "$tmp_dir/templates" ] && cp -r "$tmp_dir/templates" "$PANEL_DIR/"
-    # 兼容 zip 内有子目录的情况
-    local sub_dir
-    sub_dir=$(find "$tmp_dir" -mindepth 1 -maxdepth 1 -type d | head -1)
-    if [ -n "$sub_dir" ]; then
-        [ -d "$sub_dir/static" ]    && cp -r "$sub_dir/static"    "$PANEL_DIR/"
-        [ -d "$sub_dir/templates" ] && cp -r "$sub_dir/templates" "$PANEL_DIR/"
-    fi
-    # 复制默认配置（不覆盖已有配置）
-    [ -f "$tmp_dir/config.toml" ] && [ ! -f "$PANEL_DIR/config.toml" ] && cp "$tmp_dir/config.toml" "$PANEL_DIR/"
-    [ -n "$sub_dir" ] && [ -f "$sub_dir/config.toml" ] && [ ! -f "$PANEL_DIR/config.toml" ] && cp "$sub_dir/config.toml" "$PANEL_DIR/"
-
-    rm -rf "$tmp_dir"
-
-    write_panel_service || return 1
-    service_daemon_reload
-    service_enable realm-panel
-    service_start realm-panel
-    echo -e "${GREEN}面板安装成功!${PLAIN}"
-}
-
-uninstall_panel() {
-    service_stop realm-panel
-    service_disable realm-panel
-    rm -f "$PANEL_SYSTEMD_SERVICE_FILE" "$PANEL_OPENRC_SERVICE_FILE"
-    service_daemon_reload
-    rm -rf "$PANEL_DIR"
-    echo "已卸载"
-}
-
 # --- 脚本更新 ---
 Update_Shell() {
     local url="https://raw.githubusercontent.com/violetaini/realm/main/realm.sh"
@@ -732,7 +584,6 @@ show_menu() {
     echo "#        Realm 一键转发脚本 (v${sh_ver})         #"
     echo "################################################"
     echo -e " Realm 状态: $(get_status)"
-    echo -e " 面板 状态: $(get_panel_status)"
     echo "------------------------------------------------"
     echo "  1. 安装 / 重置 Realm"
     echo "  2. 卸载 Realm"
@@ -747,7 +598,6 @@ show_menu() {
     echo "  9. 重启服务"
     echo "------------------------------------------------"
     echo "  10. 更新脚本"
-    echo "  11. 面板管理"
     echo "  0. 退出脚本"
     echo "################################################"
 }
@@ -756,7 +606,7 @@ main() {
     check_dependencies; init_env
     while true; do
         show_menu
-        read -p "选择 [0-11]: " opt || exit 0
+        read -p "选择 [0-10]: " opt || exit 0
         case $opt in
             1) install_realm ;;
             2) uninstall_realm ;;
@@ -768,7 +618,6 @@ main() {
             8) stop_service ;;
             9) restart_service ;;
             10) Update_Shell ;;
-            11) panel_management ;;
             0) exit 0 ;;
             *) echo "无效" ;;
         esac
