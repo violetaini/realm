@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==========================================
-# Realm 一键转发脚本 v3.2.8 (violetaini fork)
+# Realm 一键转发脚本 v3.2.9 (violetaini fork)
 # 更新日志:
 # 1. 修复 Alpine Linux (musl) 下 IP/域名正则校验失败的问题
 # 2. 新增 Alpine Linux / OpenRC 支持
@@ -11,10 +11,12 @@
 # 6. 修复终端异常断开时 read 读到 EOF 导致 CPU 100% 空转死循环的严重缺陷
 # 7. 根据物理内存智能动态适配 Realm 零拷贝管道容量 (-p 16/32/64)，防止小内存 OOM
 # 8. 彻底移除 Web 可视化面板功能，消除 HTTP 端口暴露与扫描攻击面，保持纯净 CLI
+# 9. 优化 systemd 服务配置，增加 LimitNOFILE=1048576 与 LimitNPROC=524288，彻底根除高并发/零拷贝句柄耗尽引发的假死断流
+# 10. 优化默认配置生成与热升级逻辑，注入高性能 DNS 动态解析策略 (min_ttl=5, max_ttl=30)，完美适配 DDNS 与落地机 IP 动态漂移
 # ==========================================
 
 # --- 基础配置 ---
-sh_ver="3.2.8"
+sh_ver="3.2.9"
 
 # 颜色定义
 RED="\033[31m"
@@ -204,6 +206,30 @@ init_env() {
     mkdir -p "$REALM_DIR"
     mkdir -p "$CONFIG_DIR"
     [ ! -f "$CONFIG_FILE" ] && write_config_header
+
+    # 自动升级已有配置：如果 config.toml 缺少 [dns] 段，自动注入高性能 DNS 策略
+    if [ -f "$CONFIG_FILE" ] && ! grep -q "^\[dns\]" "$CONFIG_FILE"; then
+        local tmp_dns="/tmp/realm_dns_$$.toml"
+        cat <<EOF > "$tmp_dns"
+[dns]
+mode = "ipv4_only"
+protocol = "tcp_and_udp"
+nameservers = ["223.5.5.5:53", "119.29.29.29:53"]
+min_ttl = 5
+max_ttl = 30
+cache_size = 256
+
+EOF
+        cat "$tmp_dns" "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
+        rm -f "$tmp_dns"
+    fi
+
+    # 自动升级已有服务：如果 systemd 服务文件缺少 LimitNOFILE，自动更新并重载
+    if [ -f "$REALM_SYSTEMD_SERVICE_FILE" ] && ! grep -q "LimitNOFILE" "$REALM_SYSTEMD_SERVICE_FILE"; then
+        write_realm_service >/dev/null 2>&1 || true
+        service_daemon_reload 2>/dev/null || true
+    fi
+
     # 彻底禁用并清理历史遗留面板服务与文件，防范 HTTP 端口扫描风险
     if service_is_active realm-panel 2>/dev/null; then
         service_stop realm-panel 2>/dev/null || true
@@ -216,6 +242,14 @@ init_env() {
 
 write_config_header() {
     cat <<EOF > "$CONFIG_FILE"
+[dns]
+mode = "ipv4_only"
+protocol = "tcp_and_udp"
+nameservers = ["223.5.5.5:53", "119.29.29.29:53"]
+min_ttl = 5
+max_ttl = 30
+cache_size = 256
+
 [network]
 no_tcp = false
 use_udp = true
@@ -359,6 +393,8 @@ Type=simple
 User=root
 Restart=on-failure
 RestartSec=5s
+LimitNOFILE=1048576
+LimitNPROC=524288
 WorkingDirectory=${REALM_DIR}
 ExecStart=${REALM_BIN} -c ${CONFIG_FILE}${pipe_arg}
 
@@ -379,6 +415,7 @@ directory="${REALM_DIR}"
 command_user="root"
 respawn_delay=5
 respawn_max=0
+rc_ulimit="-n 1048576"
 
 depend() {
     need net
